@@ -17,7 +17,6 @@ package io.micronaut.configuration.kafka.intercept;
 
 import io.micronaut.aop.MethodInterceptor;
 import io.micronaut.aop.MethodInvocationContext;
-import io.micronaut.configuration.kafka.KafkaProducerFactory;
 import io.micronaut.configuration.kafka.annotation.KafkaClient;
 import io.micronaut.configuration.kafka.annotation.KafkaKey;
 import io.micronaut.configuration.kafka.annotation.KafkaTimestamp;
@@ -86,7 +85,6 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
     private static final Logger LOG = LoggerFactory.getLogger(KafkaClientIntroductionAdvice.class);
 
     private final BeanContext beanContext;
-    private final KafkaProducerFactory producerFactory;
     private final SerdeRegistry serdeRegistry;
     private final ConversionService<?> conversionService;
     private final Map<ProducerKey, Producer> producerMap = new ConcurrentHashMap<>();
@@ -95,17 +93,14 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
      * Creates the introduction advice for the given arguments.
      *
      * @param beanContext       The bean context.
-     * @param producerFactory   The producer factory.
      * @param serdeRegistry     The serde registry
      * @param conversionService The conversion service
      */
     public KafkaClientIntroductionAdvice(
             BeanContext beanContext,
-            KafkaProducerFactory producerFactory,
             SerdeRegistry serdeRegistry,
             ConversionService<?> conversionService) {
         this.beanContext = beanContext;
-        this.producerFactory = producerFactory;
         this.serdeRegistry = serdeRegistry;
         this.conversionService = conversionService;
     }
@@ -117,9 +112,9 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
         if (context.hasAnnotation(KafkaClient.class)) {
             AnnotationValue<KafkaClient> client = context.findAnnotation(KafkaClient.class).orElseThrow(() -> new IllegalStateException("No @KafkaClient annotation present on method: " + context));
 
-            boolean isBatchSend = client.getRequiredValue("batch", Boolean.class);
+            boolean isBatchSend = client.isTrue("batch");
 
-            String topic = context.getValue(Topic.class, String.class)
+            String topic = context.stringValue(Topic.class)
                     .orElseGet(() -> findTopicArgument(context).orElse(null));
 
             if (StringUtils.isEmpty(topic)) {
@@ -140,8 +135,8 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
             List<AnnotationValue<io.micronaut.messaging.annotation.Header>> headers = context.getAnnotationValuesByType(io.micronaut.messaging.annotation.Header.class);
 
             for (AnnotationValue<io.micronaut.messaging.annotation.Header> header : headers) {
-                String name = header.get("name", String.class).orElse(null);
-                String value = header.getValue(String.class).orElse(null);
+                String name = header.stringValue("name").orElse(null);
+                String value = header.stringValue().orElse(null);
 
                 if (StringUtils.isNotEmpty(name) && StringUtils.isNotEmpty(value)) {
                     kafkaHeaders.add(
@@ -157,10 +152,13 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
             Map<String, Object> parameterValues = context.getParameterValueMap();
 
             for (Argument argument : arguments) {
-                AnnotationValue<io.micronaut.messaging.annotation.Header> headerAnn = argument.getAnnotation(io.micronaut.messaging.annotation.Header.class);
-                if (headerAnn != null) {
+                if (argument.isAnnotationPresent(io.micronaut.messaging.annotation.Header.class)) {
+                    final AnnotationMetadata annotationMetadata = argument.getAnnotationMetadata();
                     String argumentName = argument.getName();
-                    String name = headerAnn.get("name", String.class).orElse(headerAnn.getValue(String.class).orElse(argumentName));
+                    String name = annotationMetadata
+                            .stringValue(io.micronaut.messaging.annotation.Header.class,"name")
+                            .orElseGet(() ->
+                                    annotationMetadata.stringValue(io.micronaut.messaging.annotation.Header.class).orElse(argumentName));
                     Object v = parameterValues.get(argumentName);
 
                     if (v != null) {
@@ -609,7 +607,7 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
                 Serializer<?> valueSerializer = newConfiguration.getValueSerializer().orElse(null);
 
                 if (valueSerializer == null) {
-                    boolean batch = metadata.getValue(KafkaClient.class, "batch", Boolean.class).orElse(false);
+                    boolean batch = metadata.isTrue(KafkaClient.class, "batch");
                     valueSerializer = serdeRegistry.pickSerializer(batch ? bodyArgument.getFirstTypeVariable().orElse(bodyArgument) : bodyArgument);
 
                     if (LOG.isDebugEnabled()) {
@@ -619,7 +617,7 @@ public class KafkaClientIntroductionAdvice implements MethodInterceptor<Object, 
                 }
             }
 
-            return producerFactory.createProducer(newConfiguration);
+            return beanContext.createBean(Producer.class, newConfiguration);
         });
     }
 
